@@ -17,9 +17,11 @@ class QueryBuilder:
         # [추가] NLTK 문장 토크나이저 다운로드 (최초 1회만 실행)
         try:
             nltk.data.find('tokenizers/punkt')
+            nltk.data.find('tokenizers/punkt_tab/english/')
         except LookupError:
             print("NLTK punkt 데이터를 다운로드 중...")
             nltk.download('punkt') # 문장 분리 기능에 필요한 지식 데이터베이스 
+            nltk.download('punkt_tab')
 
 
     def build_offline_query(self, paper_id, full_text, title, abstract, all_references, num_sentences = config.NUM_SENTENCES):
