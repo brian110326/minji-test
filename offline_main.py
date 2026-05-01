@@ -136,7 +136,7 @@ def run_pipeline(data_path, paper_batch_size):
     total_papers = len(eval_data)
     all_processed_queries = [] # 모든 배치를 1차원으로 통합할 리스트 (할지말지 고민)
 
-    print(f"총 논문 개수 : {total_papers}개 (논문 {paper_batch_size}개씩 묶어서 처리")
+    print(f"총 논문 개수 : {total_papers}개 (논문 {paper_batch_size}개씩 묶어서 처리)")
 
     # 전체 데이터 global metrics 누적 변수 초기화 
     total_queries_so_far = 0
