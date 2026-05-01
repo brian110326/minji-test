@@ -44,6 +44,6 @@ RRF_K = 60                  # RRF 스무딩 상수
 PAPER_BATCH_SIZE = 64       # 논문 배치 크기 (for main)
 QUERY_BATCH_SIZE = 64       # 쿼리 배치 크기 (for encode) 
 MAX_SEQ_LENGTH = 512        # SPECTER2 최대 입력 크기 
-# PAPER_SIM_WEIGHT = 0.4      # 중복 논문일 경우 가중합 비율 (paper_query) 
-# CONTEXT_SIM_WEIGHT = 0.6    # 중복 논문일 경우 가중합 비율 (context_query)
+PAPER_SIM_WEIGHT = 0.4      # 중복 논문일 경우 가중합 비율 (paper_query) 
+CONTEXT_SIM_WEIGHT = 0.6    # 중복 논문일 경우 가중합 비율 (context_query)
 
