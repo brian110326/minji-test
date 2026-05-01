@@ -55,37 +55,55 @@ import config
 
 def cascade_fusion(p_search_results, c_vecs, p_vecs, embedding_db):
     final_results = []
+    matrix_cache = {} 
     
     for p_res, c_v, p_v in zip(p_search_results, c_vecs, p_vecs):
         c_vec_1d = np.squeeze(c_v)
         
         # 1. 3000개의 후보 논문 ID와 FAISS 점수(p_sim)를 리스트로 분리
         p_ids = [item['paper_id'] for item in p_res]
-        p_sims = np.array([item['score'] for item in p_res])
+        cache_key = tuple(p_ids)
+
+        # 만약 이미 메모리에 올려둔 행렬이 있다면 새로 안만들고 바로 꺼내 씀 
+        if cache_key in matrix_cache:
+            target_matrix, valid_p_ids, valid_p_sims = matrix_cache[cache_key]
+        else: 
+            p_sims = np.array([item['score'] for item in p_res])
         
-        # 2. DB에서 3000개의 벡터를 가져와 거대한 '행렬(Matrix)'로 조립
-        target_vectors = []
-        valid_indices = []
+            # 2. DB에서 3000개의 벡터를 가져와 거대한 '행렬(Matrix)'로 조립
+            target_vectors = []
+            valid_indices = []
         
-        for idx, pid in enumerate(p_ids):
-            vec = embedding_db.get(pid)
-            if vec is not None:
-                target_vectors.append(np.squeeze(vec))
-                valid_indices.append(idx)
+            for idx, pid in enumerate(p_ids):
+                vec = embedding_db.get(pid)
+                if vec is not None:
+                    target_vectors.append(np.squeeze(vec))
+                    valid_indices.append(idx)
                 
-        # 방어 로직 (만약 유효한 벡터가 하나도 없다면 패스)
-        if not target_vectors:
-            final_results.append([])
-            continue
+            # 방어 로직 (만약 유효한 벡터가 하나도 없다면 패스)
+            if not target_vectors:
+                final_results.append([])
+                continue
+                
+            # shape: (3000, 768) 형태의 2차원 행렬 생성
+            target_matrix = np.array(target_vectors) 
+            valid_p_ids = [p_ids[i] for i in valid_indices]
+            valid_p_sims = p_sims[valid_indices]
             
-        # shape: (3000, 768) 형태의 2차원 행렬 생성
-        target_matrix = np.array(target_vectors) 
-        valid_p_ids = [p_ids[i] for i in valid_indices]
-        valid_p_sims = p_sims[valid_indices]
-        
+            matrix_cache[cache_key] = (target_matrix, valid_p_ids, valid_p_sims)
+
         # 3. [핵심: 진짜 배치 연산 🔥] 
         # 3000번 for문을 돌지 않고, 행렬 곱셈 단 1번으로 3000개의 유사도를 동시에 계산!
-        c_sims = np.dot(target_matrix, c_vec_1d) # 반환값 shape: (3000,)
+        c_sims = np.dot(target_matrix, c_vec_1d) 
+        
+        # 3-1. paper 점수 0~1 정규화 
+        p_min, p_max = np.min(valid_p_sims), np.max(valid_p_sims)
+        p_norm = (valid_p_sims - p_min) / (p_max - p_min + 1e-8) # 작은 수 더해서 0으로 나누는 경우 방지 
+        
+
+        # 3-2. context 점수 0~1 정규화 
+        c_min, c_max = np.min(c_vec_1d), np.max(c_vec_1d)
+        c_norm = (c_sims - c_min) / (c_max - c_min + 1e-8) # 반환값 shape: (3000,)
         
         # 4. 가중합도 NumPy로 한 번에 처리
         final_sims = (config.PAPER_SIM_WEIGHT * valid_p_sims) + (config.CONTEXT_SIM_WEIGHT * c_sims)
