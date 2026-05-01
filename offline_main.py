@@ -6,16 +6,16 @@ import utils
 from query_builder import QueryBuilder
 from embedder import SpecterEmbedder
 from retriever import FaissRetriever
-from fusion import rank_fusion
 from soft_bias import SoftBiasScorer
 from fusion_var import rank_fusion_var
 from evaluate import calculate_metrics
+from cascade import cascade_fusion
 
 
-def process_paper_batch(paper_batch, query_builder, embedder, retriever, bib_scorer, embedding_db):
+def process_paper_batch(paper_batch, query_builder, embedder, retriever, bib_scorer, embedding_db, paper_query_top_k = config.PAPER_QUERY_TOP_K):
     # paper_batch : eval_data에서 32개 논문 가져온 리스트 (json 형태)
     # 1. Flatten : 논문 32개 각각의 모든 context를 1차원 리스트로 모음
-    unique_paper_queries = {} # paper query 저장 (최대 32개)
+    paper_query_list = []
     context_query_list = []   # context query 저장 
     metadata_list = []        # 메타데이터 보관소 (QueryBuilder가 만든 딕셔너리 결과물)
 
@@ -26,10 +26,7 @@ def process_paper_batch(paper_batch, query_builder, embedder, retriever, bib_sco
         paper_query, context_queries = query_builder.build_offline_query(
             paper_id, item.get('full_text',''), item.get('title', ''), item.get('abstract',''), item.get('all_references', [])
         )
-        
 
-        # 전역 쿼리는 논문당 1번만 저장
-        unique_paper_queries[paper_id] = paper_query
 
         # 해당 논문의 모든 인용구([CITE:])를 context_query_list에 저장
         for sample in context_queries:
@@ -42,6 +39,7 @@ def process_paper_batch(paper_batch, query_builder, embedder, retriever, bib_sco
             # [for 초기 데이터] 
             sample['target_ids'] = valid_targets
 
+            paper_query_list.append(paper_query)
             context_query_list.append(sample['context_query'])
             metadata_list.append(sample) 
 
@@ -54,51 +52,36 @@ def process_paper_batch(paper_batch, query_builder, embedder, retriever, bib_sco
     # 2. 배치 임베딩
     # 2-1. context query 한 번에 임베딩 
     # 이때, embedder 내부에서 batch_size(예: 64) 단위로 쪼개어 연산 후 붙여줌
+    p_vectors = embedder.encode(paper_query_list)
     c_vectors = embedder.encode(context_query_list)
+    query_ids = [m['query_id'] for m in metadata_list]
 
     # 2-2. 전역 쿼리는 중복 제거한 paper_batch(예: 32) 개수만큼 인코딩
     # 기존 : {"paper_id : paper_query", " : ", ...}
     # 적용 후 : [[, , ,], [, , ,], ...]
-    p_unique_vecs = embedder.encode(list(unique_paper_queries.values()))
 
-    # 2-3. 인코딩된 paper query 벡터들(32개)을 딕셔너리로 변형
-    p_vec_dict = {pid: vec for pid, vec in zip(unique_paper_queries.keys(), p_unique_vecs)}
+    # 3. 오프라인 필터링 
+    # context로 전체 후보 풀 다 뒤지지 않고, paper querty로 먼저 FAISS 검색해서 후보 풀 추림 (몇개정도? -> config에서 설정)
+    p_search_results = retriever.search(p_vectors, query_ids, source = ["paper"] * total_samples, top_k = paper_query_top_k)
+    
+    # 4. 온라인 정밀 타격 (추려진 3,000개 안에서만 내적하여 최종 top-100 선발)
+    all_fused_results = cascade_fusion(p_search_results, c_vectors, p_vectors, embedding_db)
 
-    # 2-4. paper query 벡터를 context query 개수에 맞춰 복제 
-    p_vectors = np.array([p_vec_dict[m['paper_id']] for m in metadata_list])
+    final_output_for_next = [] # 다음 단계에 제공
 
-    # 3. FAISS 검색 
-    query_ids = [m['query_id'] for m in metadata_list]
-
-    # 3-1. FAISS가 각 query(paper/context)의 top-100 결과 도출
-    p_search_results = retriever.search(p_vectors, query_ids, source = ["paper"] * total_samples)
-    c_search_results = retriever.search(c_vectors, query_ids, source = ["context"] * total_samples)
-
-    # 4. RRF, Soft Bias 적용 및 채점 
-    '''
-    4-1. RRF
-    # input : [[{}, {}, ...], [{}, {}, ...], ...] 2개 
-    # output : "" 1개 
-    '''
-
-    # original
-    # all_fused_results = rank_fusion(p_search_results, c_search_results)
-
-    # 가중합 필수 버전
-    all_fused_results = rank_fusion_var(p_search_results, c_search_results, p_vectors, c_vectors, embedding_db)
-    final_output_for_next = [] # 다음 단계에 제공 
-
-    # 4-2. Soft Bias 
+    # 5. Soft Bias 적용 및 최종 피처 패키징 
     for i in range(total_samples):
         meta = metadata_list[i]
+        
+        candidates = all_fused_results[i]
 
-        fused = all_fused_results[i] # fusion 적용하고 난 top-100
+        # FAISS DB에 존재하는 유저 인용 기록만 남김 
+        raw_bibs = meta.get('bib_ids', [])
+        valid_user_bibs = [b for b in raw_bibs if b in embedding_db] # db에 존재하는 bib만 남김
 
-        # soft bias 계산 (bib_ids 사용)
-        user_bibs = meta.get('bib_ids', [])
-        biased = bib_scorer.soft_bias(fused, user_bibs, embedding_db)
-
-        # sim, bib_score 정규화 
+        # soft bias 점수 계산
+        biased = bib_scorer.soft_bias(candidates, valid_user_bibs, embedding_db)
+        # sim, bib_score 정규화
         raw_sims = [c['sim'] for c in biased]
         raw_bibs = [c.get('bib_score', 0.0) for c in biased]
 

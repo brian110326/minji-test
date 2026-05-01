@@ -7,8 +7,7 @@ from query_builder import QueryBuilder
 from embedder import SpecterEmbedder
 from retriever import FaissRetriever
 from soft_bias import SoftBiasScorer
-from fusion import rank_fusion
-from fusion_var import rank_fusion_var
+from cascade import cascade_fusion
 
 class OnlinePaperProcess:
     def __init__(self):
@@ -43,8 +42,7 @@ class OnlinePaperProcess:
         p_vec, c_vec = vecs[0:1], vecs[1:2]
 
         # 3. FAISS 고속 검색
-        p_res = self.retriever.search(p_vec, [req_id], source=["paper"])
-        c_res = self.retriever.search(c_vec, [req_id], source=["context"])
+        p_res = self.retriever.search(p_vec, [req_id], source=["paper"], top_k = config.PAPER_QUERY_TOP_K)
         
         print(f" [Debug] p_res 타입: {type(p_res)}, 길이: {len(p_res[0])}")
 
@@ -53,7 +51,7 @@ class OnlinePaperProcess:
         # fused = rank_fusion(p_res, c_res)[0]
         
         # 가중합 필수 버전
-        fused = rank_fusion_var(p_res, c_res, p_vec, c_vec, self.embedding_db)[0]
+        fused = cascade_fusion(p_res, [c_vec], [p_vec], self.embedding_db)[0]
         print(f" [Debug] fused 개수: {len(fused)}")
 
         # 5. Soft Bias 계산
